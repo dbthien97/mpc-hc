@@ -112,25 +112,28 @@ jobs:
       - name: Update version
         shell: cmd
         run: call update_version.bat
-      - name: Fix Windows API target for Windows 10
+      - name: Fix DPI Windows API declarations (MPC-HC 2.5.2)
         shell: pwsh
         run: |
-          $files = @(git ls-files -- '*.props' '*.vcxproj' '*.targets' '*.h' '*.cpp')
-          $count = 0
-          foreach ($file in $files) {
-            if ($file -match '^src/thirdparty/') { continue }
-            $path = Join-Path $PWD $file
-            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-            $old = [IO.File]::ReadAllText($path)
-            $new = $old -creplace '\b(WINVER|_WIN32_WINNT)(\s*=\s*|[ \t]+)0x06010000\b', '${1}${2}0x0A00'
-            if ($new -cne $old) {
-              [IO.File]::WriteAllText($path, $new, [Text.UTF8Encoding]::new($true))
-              Write-Host "Updated Windows API target: $file"
-              $count++
-            }
+          $path = 'src/mpc-hc/DpiHelper.cpp'
+          $code = [IO.File]::ReadAllText((Join-Path $PWD $path))
+          $patches = @(
+            @('UINT WINAPI GetDpiForWindow(HWND hwnd);', 'UINT WINAPI MpcGetDpiForWindow(HWND hwnd);'),
+            @('BOOL WINAPI SystemParametersInfoForDpi(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni, UINT dpi);', 'BOOL WINAPI MpcSystemParametersInfoForDpi(UINT uiAction, UINT uiParam, PVOID pvParam, UINT fWinIni, UINT dpi);'),
+            @('int WINAPI GetSystemMetricsForDpi(int nIndex);', 'int WINAPI MpcGetSystemMetricsForDpi(int nIndex, UINT dpi);'),
+            @('decltype(GetDpiForWindow)', 'decltype(MpcGetDpiForWindow)'),
+            @('decltype(SystemParametersInfoForDpi)', 'decltype(MpcSystemParametersInfoForDpi)'),
+            @('decltype(GetSystemMetricsForDpi)', 'decltype(MpcGetSystemMetricsForDpi)'),
+            @('return fnGetSystemMetricsForDpi(type);', 'return fnGetSystemMetricsForDpi(type, m_dpix);'),
+            @('int ret = fnGetSystemMetricsForDpi(type);', 'int ret = ::GetSystemMetrics(type);')
+          )
+          foreach ($pair in $patches) {
+            if (!$code.Contains($pair[0])) { throw "Expected DPI code not found: $($pair[0])" }
+            $code = $code.Replace($pair[0], $pair[1])
+            Write-Host "Patched: $($pair[0])"
           }
-          if ($count -eq 0) { throw 'Windows API macro definitions not found; inspect project properties before building.' }
-          git diff --stat
+          [IO.File]::WriteAllText((Join-Path $PWD $path), $code, [Text.UTF8Encoding]::new($false))
+          git diff -- src/mpc-hc/DpiHelper.cpp
       - name: Build MPC-HC x64
         shell: cmd
         run: msbuild mpc-hc.sln /m /t:Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
