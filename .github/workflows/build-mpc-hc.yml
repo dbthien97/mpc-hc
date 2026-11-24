@@ -1,35 +1,30 @@
-name: Build MPC-HC x64
-
+name: Build MPC-HC 2.5.2 x64
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
-
+    inputs:
+      source:
+        description: 'Source: original or smart-shuffle (must be based on 2.5.2)'
+        type: choice
+        options: [original, smart-shuffle]
+        default: original
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 120
-
+    timeout-minutes: 90
     steps:
       - name: Checkout MPC-HC 2.5.2
         uses: actions/checkout@v4
         with:
-          repository: clsid2/mpc-hc
-          ref: 'refs/tags/2.5.2'
+          repository: ${{ inputs.source == 'smart-shuffle' && github.repository || 'clsid2/mpc-hc' }}
+          ref: ${{ inputs.source == 'smart-shuffle' && 'smart-shuffle' || 'refs/tags/2.5.2' }}
           submodules: recursive
           fetch-depth: 0
-
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
-
-      - name: Remove preinstalled MSYS2
+      - name: Remove existing MSYS2
         shell: pwsh
         run: |
-          if (Test-Path 'C:\msys64') {
-            Remove-Item 'C:\msys64' -Recurse -Force
-          }
-
+          if (Test-Path 'C:\msys64') { Remove-Item 'C:\msys64' -Recurse -Force }
       - name: Setup MSYS2 and MinGW64
         uses: msys2/setup-msys2@v2
         with:
@@ -37,119 +32,81 @@ jobs:
           location: C:\
           update: true
           install: >-
-            make
-            diffutils
-            pkg-config
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-binutils
-            mingw-w64-x86_64-nasm
-            mingw-w64-x86_64-pkgconf
-            mingw-w64-x86_64-bzip2
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-xz
-
-      - name: Install YASM separately
+            make diffutils pkg-config
+            mingw-w64-x86_64-gcc mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-nasm mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-bzip2 mingw-w64-x86_64-zlib mingw-w64-x86_64-xz
+      - name: Install YASM
+        shell: pwsh
+        run: choco install yasm -y
+      - name: Configure build environment
         shell: pwsh
         run: |
-          choco install yasm -y
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-          "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
-
-      - name: Configure environment
-        shell: pwsh
-        run: |
-          "MPCHC_MSYS=C:\msys64" >> $env:GITHUB_ENV
-          "MPCHC_MINGW64=C:\msys64\mingw64" >> $env:GITHUB_ENV
-          "MPCHC_MINGW32=C:\msys64\mingw64" >> $env:GITHUB_ENV
-          "MSYSTEM=MINGW64" >> $env:GITHUB_ENV
-          "MSYS2_PATH_TYPE=inherit" >> $env:GITHUB_ENV
-          "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
-          "C:\msys64\usr\bin" >> $env:GITHUB_PATH
-
-          @"
+          'MPCHC_MSYS=C:\msys64' >> $env:GITHUB_ENV
+          'MPCHC_MINGW64=C:\msys64\mingw64' >> $env:GITHUB_ENV
+          'MSYSTEM=MINGW64' >> $env:GITHUB_ENV
+          'MSYS2_PATH_TYPE=inherit' >> $env:GITHUB_ENV
+          'C:\msys64\usr\bin' >> $env:GITHUB_PATH
+          'C:\msys64\mingw64\bin' >> $env:GITHUB_PATH
+          @'
           @ECHO OFF
           SET "MPCHC_MSYS=C:\msys64"
           SET "MPCHC_MINGW64=C:\msys64\mingw64"
-          SET "MPCHC_MINGW32=C:\msys64\mingw64"
           SET "MSYSTEM=MINGW64"
           SET "MSYS2_PATH_TYPE=inherit"
           SET "MPCHC_GIT=C:\Program Files\Git"
           SET "MPCHC_WINSDK_VER=10.0"
-          "@ | Set-Content build.user.bat -Encoding ASCII
-
-      - name: Fix MinGW64 tool names
-        shell: pwsh
-        run: |
-          $bin = "C:\msys64\mingw64\bin"
-
-          foreach ($tool in @("nm", "ar", "ranlib", "strip", "objdump", "dlltool")) {
-            $source = Join-Path $bin "$tool.exe"
-            $target = Join-Path $bin "x86_64-w64-mingw32-$tool.exe"
-
-            if ((Test-Path $source) -and !(Test-Path $target)) {
-              Copy-Item $source $target
-              Write-Host "Created: $target"
-            }
+          '@ | Set-Content build.user.bat -Encoding ASCII
+          $bin = 'C:\msys64\mingw64\bin'
+          foreach ($tool in @('nm','ar','ranlib','strip','objdump','dlltool')) {
+            $src = Join-Path $bin "$tool.exe"
+            $dst = Join-Path $bin "x86_64-w64-mingw32-$tool.exe"
+            if ((Test-Path $src) -and !(Test-Path $dst)) { Copy-Item $src $dst }
           }
-
-          if (!(Test-Path "$bin\x86_64-w64-mingw32-nm.exe")) {
-            throw "MinGW64 nm.exe not found"
-          }
-
       - name: Check build environment
-        shell: cmd
+        shell: pwsh
         run: |
           msbuild -version
           git log -1 --oneline
-          where gcc || exit /b 1
-          where nasm || exit /b 1
-          where yasm || exit /b 1
-          where make || exit /b 1
-          where x86_64-w64-mingw32-nm || exit /b 1
-          gcc --version
-          nasm -v
-          yasm --version
-          echo %MPCHC_MINGW64%
-
+          foreach ($tool in @('gcc','nasm','yasm','make','x86_64-w64-mingw32-nm')) {
+            Get-Command "$tool.exe" -ErrorAction Stop | Select-Object Source
+          }
+          if (!(Test-Path 'C:\msys64\mingw64\lib\libbz2.a')) { throw 'Missing bzip2' }
+      - name: Fix MinGW library paths for x64
+        shell: pwsh
+        run: |
+          $root = 'C:\msys64\mingw64'
+          $runtime = Join-Path $root 'lib\libmingwex.a'
+          $gccLib = (& "$root\bin\gcc.exe" -print-libgcc-file-name | Select-Object -Last 1).Trim()
+          if (!(Test-Path $gccLib -PathType Leaf)) {
+            $libs = @(Get-ChildItem "$root\lib\gcc\x86_64-w64-mingw32" -Filter libgcc.a -Recurse -File)
+            if ($libs.Count -ne 1) { throw 'Cannot uniquely identify x64 libgcc.a' }
+            $gccLib = $libs[0].FullName
+          }
+          if (!(Test-Path $runtime -PathType Leaf)) { throw 'Missing x64 libmingwex.a' }
+          $script = Get-Content update_mingwlib.bat
+          $fixed = foreach ($line in $script) {
+            if ($line -match 'i686-w64-mingw32|lib32_libmingwex|MOVE /Y %LIBDIR%\\libmingwex') { continue }
+            if ($line -match '^\s*COPY.*x86_64-w64-mingw32.*libgcc\.a') {
+              'COPY /V /Y "' + $gccLib + '" %LIBDIR%64\'
+              'IF ERRORLEVEL 1 EXIT /B 1'
+            } elseif ($line -match '^\s*COPY.*x86_64-w64-mingw32.*libmingwex\.a') {
+              'COPY /V /Y "' + $runtime + '" %LIBDIR%64\'
+              'IF ERRORLEVEL 1 EXIT /B 1'
+            } else { $line }
+          }
+          if (($fixed -join "`n") -notmatch [regex]::Escape($runtime)) { throw 'Unexpected update_mingwlib.bat format' }
+          $fixed | Set-Content update_mingwlib.bat -Encoding ASCII
+          Get-Content update_mingwlib.bat
       - name: Update version
         shell: cmd
         run: call update_version.bat
-
-      - name: Check MinGW libraries
-        shell: pwsh
-        run: |
-          $gcc = "C:\msys64\mingw64\bin\gcc.exe"
-
-          Write-Host "GCC library:"
-          & $gcc -print-file-name=libgcc.a
-
-          Write-Host "MinGW runtime library:"
-          & $gcc -print-file-name=libmingwex.a
-
-          Write-Host "Search runtime libraries:"
-          Get-ChildItem C:\msys64\mingw64 -Recurse `
-            -Filter libmingwex.a |
-            Select-Object FullName
-
-          Write-Host "Search Bzip2 libraries:"
-          Get-ChildItem C:\msys64\mingw64 -Recurse `
-            -Filter libbz2.a |
-            Select-Object FullName
-
-          Write-Host "Original build script:"
-          Get-Content update_mingwlib.bat
-
       - name: Build MPC-HC x64
         shell: cmd
-        run: |
-          msbuild mpc-hc.sln /m /t:Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
-
+        run: msbuild mpc-hc.sln /m /t:Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
       - name: Upload MPC-HC
         uses: actions/upload-artifact@v4
         with:
-          name: MPC-HC-2.5.2-x64
-          path: bin/mpc-hc_x64/
+          name: MPC-HC-2.5.2-x64-${{ inputs.source }}
+          path: bin/mpc-hc_x64/**
           if-no-files-found: error
-          retention-days: 30
