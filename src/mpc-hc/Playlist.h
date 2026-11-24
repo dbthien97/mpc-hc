@@ -26,6 +26,7 @@
 #include <set>
 #include <deque>
 #include <string>
+#include <vector>
 #include "YoutubeDL.h"
 
 
@@ -40,11 +41,10 @@ class CPlaylistItem
 public:
     UINT m_id;
     CString m_label;
-    std::list<CString> m_fns;
-    std::list<CString> m_subs;
+    CAtlList<CString> m_fns;
+    CAtlList<CString> m_subs;
     enum type_t { file, device } m_type;
     REFERENCE_TIME m_duration;
-    ULONGLONG m_filetime; // file creation time; 0 = not checked yet, 1 = unavailable (missing file or URL)
     int inlineEditMaxWidth;
     int m_vinput, m_vchannel;
     int m_ainput;
@@ -56,17 +56,17 @@ public:
     bool m_bYoutubeDL;
     CString m_ydlSourceURL;
     CString m_useragent;
-    std::list<CYoutubeDLInstance::YDLSubInfo> m_ydl_subs;
+    CAtlList<CYoutubeDLInstance::YDLSubInfo> m_ydl_subs;
 
     bool m_fInvalid;
 
-    CPlaylistItem(bool is_copy = false);
+    CPlaylistItem();
     virtual ~CPlaylistItem();
 
     CPlaylistItem(const CPlaylistItem& pli);
     CPlaylistItem& operator=(const CPlaylistItem& pli);
 
-    bool FindFile(LPCTSTR path);
+    POSITION FindFile(LPCTSTR path);
     void AutoLoadFiles();
 
     CString GetLabel(int i = 0);
@@ -87,13 +87,17 @@ protected:
     size_t m_nShuffledListSize;
 
     bool ReshuffleIfNeeded();
-    std::mt19937 m_shuffleRng{std::random_device{}()};
+
+    // Playback history only. CAtlList and displayed playlist order are unchanged.
+    std::mt19937 m_shuffleRng{ std::random_device{}() };
     std::set<std::wstring> m_shufflePlayed;
     std::deque<std::wstring> m_shuffleRecent;
+    std::vector<std::wstring> m_shuffleHistory;
+    size_t m_shuffleHistoryCursor = 0;
+
     std::wstring ShuffleKey(POSITION pos);
+    POSITION FindShuffleKey(const std::wstring& key);
     void RecordShuffle(POSITION pos);
-
-
 
 public:
     using CAtlList<CPlaylistItem>::AddHead;
@@ -119,9 +123,7 @@ public:
     bool RemoveAll();
     bool RemoveAt(POSITION pos);
 
-    void SortById(), SortByName(), Randomize();
-    void SortByPath(int startIndex = 0);
-    void SortByDate(bool bIncreasing);
+    void SortById(), SortByName(), SortByPath(), Randomize();
 
     POSITION GetPos() const;
     void SetPos(POSITION pos);
