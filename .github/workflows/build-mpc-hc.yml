@@ -112,6 +112,25 @@ jobs:
       - name: Update version
         shell: cmd
         run: call update_version.bat
+      - name: Fix Windows API target for Windows 10
+        shell: pwsh
+        run: |
+          $files = @(git ls-files -- '*.props' '*.vcxproj' '*.targets' '*.h' '*.cpp')
+          $count = 0
+          foreach ($file in $files) {
+            if ($file -match '^src/thirdparty/') { continue }
+            $path = Join-Path $PWD $file
+            if (!(Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $old = [IO.File]::ReadAllText($path)
+            $new = $old -creplace '\b(WINVER|_WIN32_WINNT)(\s*=\s*|[ \t]+)0x06010000\b', '${1}${2}0x0A00'
+            if ($new -cne $old) {
+              [IO.File]::WriteAllText($path, $new, [Text.UTF8Encoding]::new($true))
+              Write-Host "Updated Windows API target: $file"
+              $count++
+            }
+          }
+          if ($count -eq 0) { throw 'Windows API macro definitions not found; inspect project properties before building.' }
+          git diff --stat
       - name: Build MPC-HC x64
         shell: cmd
         run: msbuild mpc-hc.sln /m /t:Build /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 /p:WindowsTargetPlatformVersion=10.0
