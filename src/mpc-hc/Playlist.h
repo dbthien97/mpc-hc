@@ -22,6 +22,10 @@
 #pragma once
 
 #include <afxcoll.h>
+#include <random>
+#include <set>
+#include <deque>
+#include <string>
 #include "YoutubeDL.h"
 
 
@@ -83,6 +87,13 @@ protected:
     size_t m_nShuffledListSize;
 
     bool ReshuffleIfNeeded();
+    std::mt19937 m_shuffleRng{std::random_device{}()};
+    std::set<std::wstring> m_shufflePlayed;
+    std::deque<std::wstring> m_shuffleRecent;
+    std::wstring ShuffleKey(POSITION pos);
+    void RecordShuffle(POSITION pos);
+
+
 
 public:
     using CAtlList<CPlaylistItem>::AddHead;
@@ -121,6 +132,12 @@ public:
     CPlaylistItem& GetNextWrap(POSITION& pos);
     CPlaylistItem& GetPrevWrap(POSITION& pos);
 
+    bool IsShuffleEnabled() const { return m_bShuffle; }
+    bool IsSmartShuffleEnd();
+    POSITION NextSmartShuffle();
+    POSITION PrevSmartShuffle();
+    void SaveShuffleHistory(LPCTSTR path);
+    void LoadShuffleHistory(LPCTSTR path);
     void SetShuffle(bool bEnable);
     CPlaylistIDs GetIDs();
 };
