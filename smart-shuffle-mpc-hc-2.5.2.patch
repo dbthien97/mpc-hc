@@ -1,0 +1,582 @@
+--- a/src/mpc-hc/Playlist.h
++++ b/src/mpc-hc/Playlist.h
+@@ -22,6 +22,11 @@
+ #pragma once
+ 
+ #include <afxcoll.h>
++#include <random>
++#include <set>
++#include <deque>
++#include <string>
++#include <vector>
+ #include "YoutubeDL.h"
+ 
+ 
+@@ -83,6 +88,17 @@
+ 
+     bool ReshuffleIfNeeded();
+ 
++    // Playback history only. CAtlList and displayed playlist order are unchanged.
++    std::mt19937 m_shuffleRng{ std::random_device{}() };
++    std::set<std::wstring> m_shufflePlayed;
++    std::deque<std::wstring> m_shuffleRecent;
++    std::vector<std::wstring> m_shuffleHistory;
++    size_t m_shuffleHistoryCursor = 0;
++
++    std::wstring ShuffleKey(POSITION pos);
++    POSITION FindShuffleKey(const std::wstring& key);
++    void RecordShuffle(POSITION pos);
++
+ public:
+     using CAtlList<CPlaylistItem>::AddHead;
+     using CAtlList<CPlaylistItem>::AddTail;
+@@ -118,6 +134,12 @@
+     CPlaylistItem& GetNextWrap(POSITION& pos);
+     CPlaylistItem& GetPrevWrap(POSITION& pos);
+ 
++    bool IsShuffleEnabled() const { return m_bShuffle; }
++    bool IsSmartShuffleEnd();
++    POSITION NextSmartShuffle();
++    POSITION PrevSmartShuffle();
++    void SaveShuffleHistory(LPCTSTR path);
++    void LoadShuffleHistory(LPCTSTR path);
+     void SetShuffle(bool bEnable);
+     CPlaylistIDs GetIDs();
+ };
+--- a/src/mpc-hc/Playlist.cpp
++++ b/src/mpc-hc/Playlist.cpp
+@@ -24,6 +24,7 @@
+ #include "Playlist.h"
+ #include "PathUtils.h"
+ #include "SettingsDefines.h"
++#include <algorithm>
+ 
+ //
+ // CPlaylistItem
+@@ -245,11 +246,15 @@
+ 
+ bool CPlaylist::RemoveAll()
+ {
++    const bool bWasPlaying = (m_pos != nullptr);
+     __super::RemoveAll();
+-    bool bWasPlaying = (m_pos != nullptr);
+     m_pos = nullptr;
+     m_posHeadShuffle = m_posTailShuffle = nullptr;
+     m_nShuffledListSize = 0;
++    m_shufflePlayed.clear();
++    m_shuffleRecent.clear();
++    m_shuffleHistory.clear();
++    m_shuffleHistoryCursor = 0;
+     return bWasPlaying;
+ }
+ 
+@@ -368,6 +373,9 @@
+ void CPlaylist::SetPos(POSITION pos)
+ {
+     m_pos = pos;
++    if (m_bShuffle && pos) {
++        RecordShuffle(pos);
++    }
+ }
+ 
+ POSITION CPlaylist::GetShuffleAwareHeadPosition()
+@@ -426,29 +434,34 @@
+ // shuffle is already enabled will re-shuffle the tracks.
+ void CPlaylist::SetShuffle(bool bEnable)
+ {
++    const bool changed = m_bShuffle != bEnable;
+     m_bShuffle = bEnable;
+-
++    if (changed) {
++        m_shufflePlayed.clear();
++        m_shuffleRecent.clear();
++        m_shuffleHistory.clear();
++        m_shuffleHistoryCursor = 0;
++    }
++    if (bEnable && m_pos) {
++        RecordShuffle(m_pos);
++    }
++
++    // Retain MPC-HC's private shuffle links for compatibility, while never
++    // changing the real CAtlList order displayed by the playlist control.
+     if (bEnable && !IsEmpty()) {
+         m_nShuffledListSize = GetCount();
+-        CAtlArray<plsort_t> positions;
+-        positions.SetCount(m_nShuffledListSize + 1);
+-        srand((unsigned int)time(nullptr));
+-        POSITION pos = GetHeadPosition();
+-        for (size_t i = 0; pos; i++, GetNext(pos)) {
+-            positions[i].n = rand();
+-            positions[i].pos = pos;
+-        }
+-        std::sort(positions.GetData(), positions.GetData() + m_nShuffledListSize);
+-        positions[m_nShuffledListSize].pos = nullptr; // Termination
+-
+-        m_posHeadShuffle = positions[0].pos;
+-        m_posTailShuffle = nullptr;
+-        for (size_t i = 0; i < m_nShuffledListSize; i++) {
+-            pos = positions[i].pos;
+-            CPlaylistItem& pli = GetAt(pos);
+-            pli.m_posPrevShuffle = m_posTailShuffle;
+-            pli.m_posNextShuffle = positions[i + 1].pos;
+-            m_posTailShuffle = pos;
++        std::vector<POSITION> positions;
++        positions.reserve(m_nShuffledListSize);
++        for (POSITION pos = GetHeadPosition(); pos; GetNext(pos)) {
++            positions.push_back(pos);
++        }
++        std::shuffle(positions.begin(), positions.end(), m_shuffleRng);
++        m_posHeadShuffle = positions.front();
++        m_posTailShuffle = positions.back();
++        for (size_t i = 0; i < positions.size(); ++i) {
++            CPlaylistItem& item = GetAt(positions[i]);
++            item.m_posPrevShuffle = i ? positions[i - 1] : nullptr;
++            item.m_posNextShuffle = (i + 1 < positions.size()) ? positions[i + 1] : nullptr;
+         }
+     } else {
+         m_posHeadShuffle = m_posTailShuffle = nullptr;
+@@ -476,3 +489,263 @@
+     }
+     return false;
+ }
++
++// Smart Shuffle is separate from the visible playlist order.
++// A file URL/path is used as the playback identity; duplicated playlist
++// entries therefore do not cause the same video to play twice in one cycle.
++std::wstring CPlaylist::ShuffleKey(POSITION pos)
++{
++    const CPlaylistItem& item = GetAt(pos);
++    CString key;
++    if (item.m_bYoutubeDL && !item.m_ydlSourceURL.IsEmpty()) {
++        key = item.m_ydlSourceURL;
++    } else if (!item.m_fns.IsEmpty()) {
++        key = item.m_fns.GetHead();
++    }
++    if (key.IsEmpty()) {
++        key.Format(_T("#item:%u"), item.m_id);
++    } else if (!PathUtils::IsURL(key)) {
++        key.Replace(_T('/'), _T('\\'));
++        key.MakeLower();
++    }
++    if (item.m_cue) {
++        CString suffix;
++        suffix.Format(_T("|cue:%d"), item.m_cue_index);
++        key += suffix;
++    }
++    return std::wstring(key.GetString());
++}
++
++POSITION CPlaylist::FindShuffleKey(const std::wstring& key)
++{
++    for (POSITION p = GetHeadPosition(); p; GetNext(p)) {
++        if (!GetAt(p).m_fInvalid && ShuffleKey(p) == key) {
++            return p;
++        }
++    }
++    return nullptr;
++}
++
++void CPlaylist::RecordShuffle(POSITION pos)
++{
++    if (!pos || GetAt(pos).m_fInvalid) {
++        return;
++    }
++    const std::wstring key = ShuffleKey(pos);
++    m_shufflePlayed.insert(key);
++
++    // Previous/Next through existing history does not create a new entry.
++    if (m_shuffleHistory.empty() || m_shuffleHistoryCursor >= m_shuffleHistory.size()
++            || m_shuffleHistory[m_shuffleHistoryCursor] != key) {
++        if (m_shuffleHistoryCursor + 1 < m_shuffleHistory.size()) {
++            m_shuffleHistory.resize(m_shuffleHistoryCursor + 1);
++        }
++        m_shuffleHistory.push_back(key);
++        m_shuffleHistoryCursor = m_shuffleHistory.size() - 1;
++        if (m_shuffleHistory.size() > 100000) {
++            m_shuffleHistory.erase(m_shuffleHistory.begin());
++            --m_shuffleHistoryCursor;
++        }
++    }
++
++    if (m_shuffleRecent.empty() || m_shuffleRecent.back() != key) {
++        m_shuffleRecent.push_back(key);
++        const size_t keep = (std::max)(size_t(20), size_t(GetCount()) * 2);
++        while (m_shuffleRecent.size() > keep) {
++            m_shuffleRecent.pop_front();
++        }
++    }
++}
++
++bool CPlaylist::IsSmartShuffleEnd()
++{
++    // A Forward operation after Previous must remain possible.
++    if (!m_shuffleHistory.empty() && m_shuffleHistoryCursor + 1 < m_shuffleHistory.size()) {
++        return false;
++    }
++    for (POSITION p = GetHeadPosition(); p; GetNext(p)) {
++        if (!GetAt(p).m_fInvalid && !m_shufflePlayed.count(ShuffleKey(p))) {
++            return false;
++        }
++    }
++    return true;
++}
++
++POSITION CPlaylist::NextSmartShuffle()
++{
++    if (!m_bShuffle) {
++        return nullptr;
++    }
++
++    // Forward replays exact history after a Previous operation.
++    while (!m_shuffleHistory.empty() && m_shuffleHistoryCursor + 1 < m_shuffleHistory.size()) {
++        ++m_shuffleHistoryCursor;
++        POSITION prior = FindShuffleKey(m_shuffleHistory[m_shuffleHistoryCursor]);
++        if (prior) {
++            return prior;
++        }
++    }
++
++    std::vector<POSITION> candidates;
++    std::set<std::wstring> uniqueKeys;
++    for (POSITION p = GetHeadPosition(); p; GetNext(p)) {
++        if (!GetAt(p).m_fInvalid && uniqueKeys.insert(ShuffleKey(p)).second) {
++            candidates.push_back(p);
++        }
++    }
++    if (candidates.empty()) {
++        return nullptr;
++    }
++
++    // Reset only after every available UNIQUE video has been played.
++    if (IsSmartShuffleEnd()) {
++        m_shufflePlayed.clear();
++    }
++
++    // Protect approximately the last 30% of a completed cycle from immediate
++    // repetition at the beginning of a new cycle (when enough options exist).
++    const size_t avoidCount = candidates.size() * 3 / 10;
++    const size_t recentCount = (std::min)(avoidCount, m_shuffleRecent.size());
++    std::set<std::wstring> blocked;
++    for (size_t i = m_shuffleRecent.size() - recentCount; i < m_shuffleRecent.size(); ++i) {
++        blocked.insert(m_shuffleRecent[i]);
++    }
++
++    std::shuffle(candidates.begin(), candidates.end(), m_shuffleRng);
++    POSITION fallback = nullptr;
++    POSITION sameAsCurrent = nullptr;
++    const std::wstring current = m_pos ? ShuffleKey(m_pos) : std::wstring();
++    for (POSITION p : candidates) {
++        const std::wstring key = ShuffleKey(p);
++        if (m_shufflePlayed.count(key)) {
++            continue;
++        }
++        if (candidates.size() > 1 && key == current) {
++            sameAsCurrent = p;
++            continue;
++        }
++        if (!fallback) {
++            fallback = p;
++        }
++        if (!blocked.count(key)) {
++            return p;
++        }
++    }
++    return fallback ? fallback : sameAsCurrent;
++}
++
++POSITION CPlaylist::PrevSmartShuffle()
++{
++    if (!m_bShuffle || m_shuffleHistory.empty() || m_shuffleHistoryCursor == 0) {
++        return m_pos;
++    }
++    const size_t originalCursor = m_shuffleHistoryCursor;
++    while (m_shuffleHistoryCursor > 0) {
++        --m_shuffleHistoryCursor;
++        POSITION previous = FindShuffleKey(m_shuffleHistory[m_shuffleHistoryCursor]);
++        if (previous) {
++            return previous;
++        }
++    }
++    m_shuffleHistoryCursor = originalCursor;
++    return m_pos;
++}
++
++// Sidecar file lives beside default.mpcpl, never touches playlist ordering.
++void CPlaylist::SaveShuffleHistory(LPCTSTR path)
++{
++    if (!m_bShuffle) {
++        ::DeleteFile(path);
++        return;
++    }
++    try {
++        CFile file(path, CFile::modeCreate | CFile::modeWrite | CFile::shareExclusive);
++        CArchive ar(&file, CArchive::store);
++        ar << DWORD(0x53534832);  // SSH2
++        ar << DWORD(m_shufflePlayed.size());
++        for (const auto& key : m_shufflePlayed) {
++            ar << CString(key.c_str());
++        }
++        ar << DWORD(m_shuffleRecent.size());
++        for (const auto& key : m_shuffleRecent) {
++            ar << CString(key.c_str());
++        }
++        ar << DWORD(m_shuffleHistory.size());
++        ar << DWORD(m_shuffleHistoryCursor);
++        for (const auto& key : m_shuffleHistory) {
++            ar << CString(key.c_str());
++        }
++        ar.Close();
++    } catch (CException* e) {
++        e->Delete();
++    }
++}
++
++void CPlaylist::LoadShuffleHistory(LPCTSTR path)
++{
++    if (!m_bShuffle) {
++        return;
++    }
++    try {
++        CFile file(path, CFile::modeRead | CFile::shareDenyWrite);
++        CArchive ar(&file, CArchive::load);
++        DWORD magic = 0, count = 0;
++        ar >> magic >> count;
++        if (magic != 0x53534832 || count > 100000) {
++            return;
++        }
++        std::set<std::wstring> available, played;
++        std::deque<std::wstring> recent;
++        std::vector<std::wstring> history;
++        for (POSITION p = GetHeadPosition(); p; GetNext(p)) {
++            if (!GetAt(p).m_fInvalid) {
++                available.insert(ShuffleKey(p));
++            }
++        }
++        for (DWORD i = 0; i < count; ++i) {
++            CString key;
++            ar >> key;
++            if (available.count(key.GetString())) {
++                played.insert(key.GetString());
++            }
++        }
++        ar >> count;
++        if (count > 100000) {
++            return;
++        }
++        for (DWORD i = 0; i < count; ++i) {
++            CString key;
++            ar >> key;
++            if (available.count(key.GetString())) {
++                recent.push_back(key.GetString());
++            }
++        }
++        DWORD historyCursor = 0;
++        ar >> count >> historyCursor;
++        if (count > 100000 || (count && historyCursor >= count)) {
++            return;
++        }
++        size_t restoredCursor = 0;
++        for (DWORD i = 0; i < count; ++i) {
++            CString key;
++            ar >> key;
++            if (available.count(key.GetString())) {
++                if (i <= historyCursor) {
++                    restoredCursor = history.size();
++                }
++                history.emplace_back(key.GetString());
++            }
++        }
++        m_shufflePlayed.swap(played);
++        m_shuffleRecent.swap(recent);
++        m_shuffleHistory.swap(history);
++        m_shuffleHistoryCursor = m_shuffleHistory.empty() ? 0 :
++            (std::min)(restoredCursor, m_shuffleHistory.size() - 1);
++        if (m_pos) {
++            RecordShuffle(m_pos);
++        }
++    } catch (CException* e) {
++        e->Delete();
++    }
++}
++
+--- a/src/mpc-hc/PlayerPlaylistBar.cpp
++++ b/src/mpc-hc/PlayerPlaylistBar.cpp
+@@ -1286,6 +1286,9 @@
+ 
+ bool CPlayerPlaylistBar::IsAtEnd()
+ {
++    if (m_pl.IsShuffleEnabled()) {
++        return m_pl.IsSmartShuffleEnd();
++    }
+     POSITION pos = m_pl.GetPos(), tail = m_pl.GetShuffleAwareTailPosition();
+     bool isAtEnd = (pos && pos == tail);
+ 
+@@ -1351,27 +1354,54 @@
+ 
+ bool CPlayerPlaylistBar::SetNext()
+ {
++    if (m_pl.IsEmpty()) {
++        return false;
++    }
+     POSITION pos = m_pl.GetPos(), org = pos;
+-    while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
+-        ;
++    if (m_pl.IsShuffleEnabled()) {
++        pos = m_pl.NextSmartShuffle();
++        if (!pos) {
++            return false;
++        }
++    } else {
++        if (!pos) {
++            pos = m_pl.GetTailPosition();
++        }
++        POSITION start = pos;
++        while (m_pl.GetNextWrap(pos).m_fInvalid && pos != start) {
++            ;
++        }
+     }
+     UpdateList();
+     m_pl.SetPos(pos);
+     EnsureVisible(pos);
+-
+-    return (pos != org);
++    return pos != org;
+ }
+ 
+ bool CPlayerPlaylistBar::SetPrev()
+ {
++    if (m_pl.IsEmpty()) {
++        return false;
++    }
+     POSITION pos = m_pl.GetPos(), org = pos;
+-    while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != org) {
+-        ;
+-    }
++    if (m_pl.IsShuffleEnabled()) {
++        pos = m_pl.PrevSmartShuffle();
++        if (!pos) {
++            return false;
++        }
++    } else {
++        if (!pos) {
++            pos = m_pl.GetHeadPosition();
++        }
++        POSITION start = pos;
++        while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != start) {
++            ;
++        }
++    }
++    UpdateList();
+     m_pl.SetPos(pos);
+     EnsureVisible(pos);
+-
+-    return (pos != org);
++    return pos != org;
+ }
+ 
+ void CPlayerPlaylistBar::SetFirstSelected()
+@@ -1379,13 +1409,21 @@
+     POSITION pos = m_list.GetFirstSelectedItemPosition();
+     if (pos) {
+         pos = FindPos(m_list.GetNextSelectedItem(pos));
++    } else if (m_pl.IsShuffleEnabled()) {
++        pos = m_pl.NextSmartShuffle();
++        if (!pos) {
++            return;
++        }
++        m_list.SetItemState(FindItem(pos), LVIS_SELECTED, LVIS_SELECTED);
+     } else {
+         pos = m_pl.GetShuffleAwareTailPosition();
++        if (!pos) {
++            return;
++        }
+         POSITION org = pos;
+         while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
+             ;
+         }
+-        // Select the first item to be played when no item was previously selected
+         m_list.SetItemState(FindItem(pos), LVIS_SELECTED, LVIS_SELECTED);
+     }
+     UpdateList();
+@@ -1395,12 +1433,21 @@
+ 
+ void CPlayerPlaylistBar::SetFirst()
+ {
+-    POSITION pos = m_pl.GetTailPosition(), org = pos;
+-    if (!pos) {
++    if (m_pl.IsEmpty()) {
+         return;
+     }
+-    while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
+-        ;
++    POSITION pos = nullptr;
++    if (m_pl.IsShuffleEnabled()) {
++        pos = m_pl.NextSmartShuffle();
++        if (!pos) {
++            return;
++        }
++    } else {
++        pos = m_pl.GetTailPosition();
++        POSITION org = pos;
++        while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
++            ;
++        }
+     }
+     UpdateList();
+     m_pl.SetPos(pos);
+@@ -1409,9 +1456,21 @@
+ 
+ void CPlayerPlaylistBar::SetLast()
+ {
+-    POSITION pos = m_pl.GetHeadPosition(), org = pos;
+-    while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != org) {
+-        ;
++    if (m_pl.IsEmpty()) {
++        return;
++    }
++    POSITION pos = nullptr;
++    if (m_pl.IsShuffleEnabled()) {
++        pos = m_pl.PrevSmartShuffle();
++        if (!pos) {
++            return;
++        }
++    } else {
++        pos = m_pl.GetHeadPosition();
++        POSITION org = pos;
++        while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != org) {
++            ;
++        }
+     }
+     m_pl.SetPos(pos);
+     EnsureVisible(pos);
+@@ -1645,6 +1704,9 @@
+                 } else {
+                     SelectFileInPlaylist(filename);
+                 }
++                CPath history;
++                history.Combine(base, _T("shuffle_history.dat"));
++                m_pl.LoadShuffleHistory(history);
+             } else {
+                 ::DeleteFile(p);
+             }
+@@ -1683,9 +1745,17 @@
+                 }
+ 
+                 SaveMPCPlayList(p, CTextFile::UTF8);
+-            }
+-        } else if (p.FileExists()) {
+-            ::DeleteFile(p);
++                CPath history;
++                history.Combine(base, _T("shuffle_history.dat"));
++                m_pl.SaveShuffleHistory(history);
++            }
++        } else {
++            if (p.FileExists()) {
++                ::DeleteFile(p);
++            }
++            CPath history;
++            history.Combine(base, _T("shuffle_history.dat"));
++            ::DeleteFile(history);
+         }
+     }
+ }
