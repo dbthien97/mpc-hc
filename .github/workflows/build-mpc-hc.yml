@@ -15,7 +15,8 @@ jobs:
       - name: Checkout MPC-HC 2.5.2
         uses: actions/checkout@v4
         with:
-          ref: '472f8fbc8'
+          repository: clsid2/mpc-hc
+          ref: 'refs/tags/2.5.2'
           submodules: recursive
           fetch-depth: 0
 
