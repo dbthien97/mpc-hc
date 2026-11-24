@@ -1515,6 +1515,7 @@ void CPlayerPlaylistBar::SetSelIdx(int i)
 
 bool CPlayerPlaylistBar::IsAtEnd()
 {
+    if (m_pl.IsShuffleEnabled()) return m_pl.IsSmartShuffleEnd();
     POSITION pos = m_pl.GetPos(), tail = m_pl.GetShuffleAwareTailPosition();
     bool isAtEnd = (pos && pos == tail);
 
@@ -1586,8 +1587,16 @@ bool CPlayerPlaylistBar::SetNext()
     POSITION org = pos;
     POSITION selPos = FindPos(m_list.GetSelectionMark());
     
-    while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
-        ;
+    if (m_pl.IsEmpty()) return false;
+    if (m_pl.IsShuffleEnabled()) {
+        pos = m_pl.NextSmartShuffle();
+        if (!pos) return false;
+    } else {
+        if (!pos) pos = m_pl.GetTailPosition();
+        POSITION start = pos;
+        while (m_pl.GetNextWrap(pos).m_fInvalid && pos != start) {
+            ;
+        }
     }
     InvalidatePlayingItem(org, pos);
     m_pl.SetPos(pos);
@@ -1605,8 +1614,16 @@ bool CPlayerPlaylistBar::SetPrev()
     POSITION org = pos;
     POSITION selPos = FindPos(m_list.GetSelectionMark());
 
-    while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != org) {
-        ;
+    if (m_pl.IsEmpty()) return false;
+    if (m_pl.IsShuffleEnabled()) {
+        pos = m_pl.PrevSmartShuffle();
+        if (!pos) return false;
+    } else {
+        if (!pos) pos = m_pl.GetHeadPosition();
+        POSITION start = pos;
+        while (m_pl.GetPrevWrap(pos).m_fInvalid && pos != start) {
+            ;
+        }
     }
     InvalidatePlayingItem(org, pos);
     m_pl.SetPos(pos);
@@ -1625,10 +1642,14 @@ void CPlayerPlaylistBar::SetFirstSelected()
     if (pos) {
         pos = FindPos(m_list.GetNextSelectedItem(pos));
     } else {
-        pos = m_pl.GetShuffleAwareTailPosition();
-        POSITION org = pos;
-        while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
-            ;
+        if (m_pl.IsShuffleEnabled()) {
+            pos = m_pl.NextSmartShuffle();
+            if (!pos) return;
+        } else {
+            pos = m_pl.GetShuffleAwareTailPosition();
+            if (!pos) return;
+            POSITION org = pos;
+            while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) { ; }
         }
         // Select the first item to be played when no item was previously selected
         m_list.SetItemState(FindItem(pos), LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
@@ -1644,8 +1665,12 @@ void CPlayerPlaylistBar::SetFirst()
     if (!pos) {
         return;
     }
-    while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) {
-        ;
+    if (m_pl.IsShuffleEnabled()) {
+        org = m_pl.GetPos();
+        pos = m_pl.NextSmartShuffle();
+        if (!pos) return;
+    } else {
+        while (m_pl.GetNextWrap(pos).m_fInvalid && pos != org) { ; }
     }
     InvalidatePlayingItem(org, pos);
     m_pl.SetPos(pos);
@@ -1931,6 +1956,9 @@ void CPlayerPlaylistBar::LoadPlaylist(LPCTSTR filename)
             if (s.bRememberPlaylistItems) {
                 ParseMPCPlayList(p);
                 Refresh();
+                CLongPath history;
+                history.Combine(base, _T("shuffle_history.dat"));
+                m_pl.LoadShuffleHistory(history);
                 //this code checks for a saved position in a playlist that was active when the player was last closed
                 if (s.fKeepHistory && s.bRememberExternalPlaylistPos && !s.externalPlayListPath.IsEmpty()) { 
                     UINT idx = s.GetSavedPlayListPosition(s.externalPlayListPath);
@@ -1981,9 +2009,15 @@ void CPlayerPlaylistBar::SavePlaylist(bool can_delay /* = false*/)
                 }
 
                 SaveMPCPlayList(p, CTextFile::UTF8);
+                CLongPath history;
+                history.Combine(base, _T("shuffle_history.dat"));
+                m_pl.SaveShuffleHistory(history);
             }
-        } else if (p.FileExists()) {
-            ::DeleteFile(p);
+        } else {
+            if (p.FileExists()) ::DeleteFile(p);
+            CLongPath history;
+            history.Combine(base, _T("shuffle_history.dat"));
+            ::DeleteFile(history);
         }
     }
 }
