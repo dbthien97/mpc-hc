@@ -84,6 +84,17 @@ jobs:
             $gccLib = $libs[0].FullName
           }
           if (!(Test-Path $runtime -PathType Leaf)) { throw 'Missing x64 libmingwex.a' }
+          $gccLib = (Resolve-Path -LiteralPath $gccLib).Path
+          $runtime = (Resolve-Path -LiteralPath $runtime).Path
+          
+          New-Item -ItemType Directory -Force -Path "lib64" | Out-Null
+          
+          Write-Host "GCC library: $gccLib"
+          Write-Host "MinGW runtime: $runtime"
+          
+          if (!(Test-Path $gccLib -PathType Leaf)) {
+              throw "Missing libgcc.a"
+          }
           $script = Get-Content update_mingwlib.bat
           $fixed = foreach ($line in $script) {
             if ($line -match 'i686-w64-mingw32|lib32_libmingwex|MOVE /Y %LIBDIR%\\libmingwex') { continue }
