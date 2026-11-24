@@ -22,6 +22,10 @@
 #pragma once
 
 #include <afxcoll.h>
+#include <random>
+#include <set>
+#include <deque>
+#include <string>
 #include "YoutubeDL.h"
 
 
@@ -36,10 +40,11 @@ class CPlaylistItem
 public:
     UINT m_id;
     CString m_label;
-    CAtlList<CString> m_fns;
-    CAtlList<CString> m_subs;
+    std::list<CString> m_fns;
+    std::list<CString> m_subs;
     enum type_t { file, device } m_type;
     REFERENCE_TIME m_duration;
+    ULONGLONG m_filetime; // file creation time; 0 = not checked yet, 1 = unavailable (missing file or URL)
     int inlineEditMaxWidth;
     int m_vinput, m_vchannel;
     int m_ainput;
@@ -51,17 +56,17 @@ public:
     bool m_bYoutubeDL;
     CString m_ydlSourceURL;
     CString m_useragent;
-    CAtlList<CYoutubeDLInstance::YDLSubInfo> m_ydl_subs;
+    std::list<CYoutubeDLInstance::YDLSubInfo> m_ydl_subs;
 
     bool m_fInvalid;
 
-    CPlaylistItem();
+    CPlaylistItem(bool is_copy = false);
     virtual ~CPlaylistItem();
 
     CPlaylistItem(const CPlaylistItem& pli);
     CPlaylistItem& operator=(const CPlaylistItem& pli);
 
-    POSITION FindFile(LPCTSTR path);
+    bool FindFile(LPCTSTR path);
     void AutoLoadFiles();
 
     CString GetLabel(int i = 0);
@@ -82,6 +87,13 @@ protected:
     size_t m_nShuffledListSize;
 
     bool ReshuffleIfNeeded();
+    std::mt19937 m_shuffleRng{std::random_device{}()};
+    std::set<std::wstring> m_shufflePlayed;
+    std::deque<std::wstring> m_shuffleRecent;
+    std::wstring ShuffleKey(POSITION pos);
+    void RecordShuffle(POSITION pos);
+
+
 
 public:
     using CAtlList<CPlaylistItem>::AddHead;
@@ -107,7 +119,9 @@ public:
     bool RemoveAll();
     bool RemoveAt(POSITION pos);
 
-    void SortById(), SortByName(), SortByPath(), Randomize();
+    void SortById(), SortByName(), Randomize();
+    void SortByPath(int startIndex = 0);
+    void SortByDate(bool bIncreasing);
 
     POSITION GetPos() const;
     void SetPos(POSITION pos);
@@ -118,6 +132,12 @@ public:
     CPlaylistItem& GetNextWrap(POSITION& pos);
     CPlaylistItem& GetPrevWrap(POSITION& pos);
 
+    bool IsShuffleEnabled() const { return m_bShuffle; }
+    bool IsSmartShuffleEnd();
+    POSITION NextSmartShuffle();
+    POSITION PrevSmartShuffle();
+    void SaveShuffleHistory(LPCTSTR path);
+    void LoadShuffleHistory(LPCTSTR path);
     void SetShuffle(bool bEnable);
     CPlaylistIDs GetIDs();
 };
