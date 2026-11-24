@@ -76,6 +76,25 @@ jobs:
           SET "MPCHC_WINSDK_VER=10.0"
           "@ | Set-Content build.user.bat -Encoding ASCII
 
+      - name: Fix MinGW64 tool names
+        shell: pwsh
+        run: |
+          $bin = "C:\msys64\mingw64\bin"
+
+          foreach ($tool in @("nm", "ar", "ranlib", "strip", "objdump", "dlltool")) {
+            $source = Join-Path $bin "$tool.exe"
+            $target = Join-Path $bin "x86_64-w64-mingw32-$tool.exe"
+
+            if ((Test-Path $source) -and !(Test-Path $target)) {
+              Copy-Item $source $target
+              Write-Host "Created: $target"
+            }
+          }
+
+          if (!(Test-Path "$bin\x86_64-w64-mingw32-nm.exe")) {
+            throw "MinGW64 nm.exe not found"
+          }
+
       - name: Check build environment
         shell: cmd
         run: |
