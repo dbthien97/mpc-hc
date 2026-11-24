@@ -44,6 +44,9 @@ jobs:
             mingw-w64-x86_64-binutils
             mingw-w64-x86_64-nasm
             mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-bzip2
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-xz
 
       - name: Install YASM separately
         shell: pwsh
@@ -113,6 +116,30 @@ jobs:
       - name: Update version
         shell: cmd
         run: call update_version.bat
+
+      - name: Check MinGW libraries
+        shell: pwsh
+        run: |
+          $gcc = "C:\msys64\mingw64\bin\gcc.exe"
+
+          Write-Host "GCC library:"
+          & $gcc -print-file-name=libgcc.a
+
+          Write-Host "MinGW runtime library:"
+          & $gcc -print-file-name=libmingwex.a
+
+          Write-Host "Search runtime libraries:"
+          Get-ChildItem C:\msys64\mingw64 -Recurse `
+            -Filter libmingwex.a |
+            Select-Object FullName
+
+          Write-Host "Search Bzip2 libraries:"
+          Get-ChildItem C:\msys64\mingw64 -Recurse `
+            -Filter libbz2.a |
+            Select-Object FullName
+
+          Write-Host "Original build script:"
+          Get-Content update_mingwlib.bat
 
       - name: Build MPC-HC x64
         shell: cmd
