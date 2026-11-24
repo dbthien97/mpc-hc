@@ -1,0 +1,40 @@
+name: Test DPI Compilation
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-dpi:
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk:
+          - '10.0.19041.0'
+          - '10.0.22621.0'
+          - '10.0.26100.0'
+        winver:
+          - '0x0601'
+          - '0x0605'
+          - '0x0A00'
+
+    steps:
+      - name: Test DPI APIs
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64 ${{ matrix.sdk }}
+          if errorlevel 1 exit /b 1
+
+          echo #include ^<windows.h^> > test.cpp
+          echo using DPI1 = decltype(^&GetDpiForWindow); >> test.cpp
+          echo using DPI2 = decltype(^&SystemParametersInfoForDpi); >> test.cpp
+          echo using DPI3 = decltype(^&GetSystemMetricsForDpi); >> test.cpp
+
+          type test.cpp
+
+          cl /nologo /c /EHsc /DWINVER=${{ matrix.winver }} /D_WIN32_WINNT=${{ matrix.winver }} test.cpp
+          if errorlevel 1 exit /b 1
+
+          echo DPI COMPILATION PASSED
