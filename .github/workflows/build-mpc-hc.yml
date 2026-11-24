@@ -23,6 +23,13 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Remove preinstalled MSYS2
+        shell: pwsh
+        run: |
+          if (Test-Path 'C:\msys64') {
+            Remove-Item 'C:\msys64' -Recurse -Force
+          }
+
       - name: Setup MSYS2 and MinGW64
         uses: msys2/setup-msys2@v2
         with:
