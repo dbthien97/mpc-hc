@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     steps:
       - name: Checkout MPC-HC 2.5.2
@@ -23,15 +23,58 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install assembler tools
-        run: choco install nasm yasm -y
+      - name: Setup MSYS2 and MinGW64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          location: C:\
+          update: true
+          install: >-
+            make
+            diffutils
+            pkg-config
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-nasm
+            mingw-w64-x86_64-yasm
+            mingw-w64-x86_64-pkgconf
 
-      - name: Check build environment
+      - name: Configure environment
         shell: pwsh
         run: |
+          "MPCHC_MSYS=C:\msys64" >> $env:GITHUB_ENV
+          "MPCHC_MINGW64=C:\msys64\mingw64" >> $env:GITHUB_ENV
+          "MPCHC_MINGW32=C:\msys64\mingw64" >> $env:GITHUB_ENV
+          "MSYSTEM=MINGW64" >> $env:GITHUB_ENV
+          "MSYS2_PATH_TYPE=inherit" >> $env:GITHUB_ENV
+          "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
+          "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+
+          @"
+          @ECHO OFF
+          SET "MPCHC_MSYS=C:\msys64"
+          SET "MPCHC_MINGW64=C:\msys64\mingw64"
+          SET "MPCHC_MINGW32=C:\msys64\mingw64"
+          SET "MSYSTEM=MINGW64"
+          SET "MSYS2_PATH_TYPE=inherit"
+          SET "MPCHC_GIT=C:\Program Files\Git"
+          SET "MPCHC_WINSDK_VER=10.0"
+          "@ | Set-Content build.user.bat -Encoding ASCII
+
+      - name: Check build environment
+        shell: cmd
+        run: |
           msbuild -version
-          git --version
           git log -1 --oneline
+          where gcc || exit /b 1
+          where nasm || exit /b 1
+          where yasm || exit /b 1
+          where make || exit /b 1
+          where x86_64-w64-mingw32-nm || exit /b 1
+          gcc --version
+          nasm -v
+          yasm --version
+          echo %MPCHC_MINGW64%
 
       - name: Update version
         shell: cmd
