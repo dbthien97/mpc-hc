@@ -43,8 +43,16 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-binutils
             mingw-w64-x86_64-nasm
-            mingw-w64-x86_64-yasm
             mingw-w64-x86_64-pkgconf
+
+      - name: Install YASM separately
+        shell: pwsh
+        run: |
+          choco install yasm -y
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          "C:\ProgramData\chocolatey\bin" >> $env:GITHUB_PATH
 
       - name: Configure environment
         shell: pwsh
